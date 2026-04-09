@@ -39,7 +39,7 @@ func TestBuildModelPickerOptionsIncludesRecentGroup(t *testing.T) {
 		},
 	}
 
-	options := buildModelPickerOptions(catalog, authState, modelState, false)
+	options := buildModelPickerOptions(catalog, authState, modelState, false, nil)
 
 	wantIDs := []string{
 		"__header__Recent",
@@ -49,7 +49,7 @@ func TestBuildModelPickerOptionsIncludesRecentGroup(t *testing.T) {
 		"openai:gpt-4o-mini",
 		"openai:o3",
 		"__separator__provider:openai",
-		"__header__provider:openai",
+		"__provider__openai",
 	}
 	if len(options) < len(wantIDs) {
 		t.Fatalf("len(options) = %d, want at least %d", len(options), len(wantIDs))
@@ -67,6 +67,44 @@ func TestBuildModelPickerOptionsIncludesRecentGroup(t *testing.T) {
 	}
 	if got := options[7].Desc; got != "" {
 		t.Fatalf("options[7].Desc = %q, want empty provider-group entry desc", got)
+	}
+	if !options[7].ProviderRow {
+		t.Fatal("expected provider group entry to be selectable provider row")
+	}
+	if got, want := options[7].DeleteProviderID, "openai"; got != want {
+		t.Fatalf("options[7].DeleteProviderID = %q, want %q", got, want)
+	}
+}
+
+func TestBuildModelPickerOptionsDisablesFreeProviderRowInModelsList(t *testing.T) {
+	catalog := &providerCatalog{
+		Providers: []providerCatalogEntry{
+			{
+				ID:       mindsporeCLIFreeProviderID,
+				Label:    "MindSpore CLI Free",
+				Protocol: "mindspore-cli-free",
+				Models: []modelCatalogEntry{
+					{ProviderID: mindsporeCLIFreeProviderID, ID: "kimi-k2.5", Label: "Kimi K2.5"},
+				},
+			},
+		},
+	}
+
+	options := buildModelPickerOptions(catalog, emptyProviderAuthState(), &modelSelectionState{}, true, nil)
+	if len(options) < 2 {
+		t.Fatalf("len(options) = %d, want at least 2", len(options))
+	}
+	if got, want := options[0].ID, "__provider__"+mindsporeCLIFreeProviderID; got != want {
+		t.Fatalf("options[0].ID = %q, want %q", got, want)
+	}
+	if !options[0].ProviderRow {
+		t.Fatal("expected free provider row marker")
+	}
+	if !options[0].Disabled {
+		t.Fatal("expected free provider row to be non-selectable")
+	}
+	if got := options[0].DeleteProviderID; got != "" {
+		t.Fatalf("options[0].DeleteProviderID = %q, want empty", got)
 	}
 }
 

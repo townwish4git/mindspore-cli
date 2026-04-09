@@ -13,6 +13,8 @@ const (
 	modelModeOwnEnv        = "own-env"
 	modelSetupToken        = "__model_setup"
 	connectProviderToken   = "__connect_provider__"
+	selectModelToken       = "__select_model__"
+	deleteProviderToken    = "__delete_provider__"
 )
 
 // appConfig holds persistent local settings stored in ~/.mscli/config.json.

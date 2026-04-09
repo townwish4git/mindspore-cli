@@ -79,18 +79,16 @@ directly. The LLM plans inline within the agent loop.
 
 ### Provider And Model Selection
 
-`mscli` now separates provider connection from model selection:
+`mscli` now converges provider connection and model selection into `/model`:
 
 ```text
-/connect
+/model
   -> merged provider catalog:
        builtin MindSpore CLI Free
        + models.dev cache/remote catalog
        + ~/.mscli/config.json extra_providers
-  -> persist connected provider auth in ~/.mscli/auth.json
-
-/model
-  -> load usable providers:
+  -> provider pane adds or refreshes connected providers in ~/.mscli/auth.json
+  -> model pane loads usable providers:
        MindSpore CLI Free when logged in
        + providers connected in ~/.mscli/auth.json
   -> persist active/recent/favorite model refs in ~/.mscli/model.json

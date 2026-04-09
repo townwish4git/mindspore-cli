@@ -175,3 +175,147 @@ func TestRenderSelectionPopupModelPickerShowsProviderAfterRecentModel(t *testing
 		t.Fatalf("expected recent model to render provider suffix, got:\n%s", plain)
 	}
 }
+
+func TestRenderModelBrowserPopupFocusProviderShowsOnlyProviderCardContent(t *testing.T) {
+	result := RenderModelBrowserPopup(&model.ModelBrowserPopup{
+		Providers: model.SelectionPopup{
+			Title: "Providers",
+			Options: []model.SelectionOption{
+				{ID: "openrouter", Label: "OpenRouter", RequiresInput: true},
+			},
+			Selected: 0,
+		},
+		Models: model.SelectionPopup{
+			Title: "Models",
+			Options: []model.SelectionOption{
+				{ID: "openrouter:openai/gpt-4o-mini", Label: "GPT-4o mini"},
+			},
+			Selected: 0,
+		},
+		Focus:            model.ModelBrowserFocusProvider,
+		ProvidersVisible: true,
+	})
+
+	plain := selectionPopupANSIPattern.ReplaceAllString(result, "")
+	if !strings.Contains(plain, "Select Providers") {
+		t.Fatalf("expected provider header, got:\n%s", plain)
+	}
+	if !strings.Contains(plain, "Select Models") {
+		t.Fatalf("expected unified header to include models label, got:\n%s", plain)
+	}
+	if !strings.Contains(plain, "→ Select Models") {
+		t.Fatalf("expected provider switch hint in header, got:\n%s", plain)
+	}
+	if !strings.Contains(plain, "↑/↓ select") {
+		t.Fatalf("expected navigation hint in footer, got:\n%s", plain)
+	}
+	if strings.Contains(plain, "GPT-4o mini") {
+		t.Fatalf("expected rear models card to hide content, got:\n%s", plain)
+	}
+	if strings.Contains(result, "───╮") || strings.Contains(result, "───╯") {
+		t.Fatalf("expected provider focus to hide rear card edge fragments, got:\n%s", result)
+	}
+	lines := strings.Split(plain, "\n")
+	if got := strings.TrimSpace(lines[len(lines)-1]); !strings.Contains(got, "↑/↓ select · enter choose · esc") {
+		t.Fatalf("expected footer on final line, got last line %q in:\n%s", got, plain)
+	}
+}
+
+func TestRenderModelBrowserPopupFocusModelsShowsOnlyModelCardContent(t *testing.T) {
+	result := RenderModelBrowserPopup(&model.ModelBrowserPopup{
+		Providers: model.SelectionPopup{
+			Title: "Providers",
+			Options: []model.SelectionOption{
+				{ID: "openrouter", Label: "OpenRouter", RequiresInput: true},
+			},
+			Selected: 0,
+		},
+		Models: model.SelectionPopup{
+			Title: "Models",
+			Options: []model.SelectionOption{
+				{ID: "__provider__openrouter", Label: "OpenRouter", ProviderRow: true, DeleteProviderID: "openrouter"},
+				{ID: "openrouter:openai/gpt-4o-mini", Label: "GPT-4o mini"},
+			},
+			Selected: 0,
+		},
+		Focus:            model.ModelBrowserFocusModel,
+		ProvidersVisible: false,
+	})
+
+	plain := selectionPopupANSIPattern.ReplaceAllString(result, "")
+	if !strings.Contains(plain, "Select Providers") {
+		t.Fatalf("expected unified header to include providers label, got:\n%s", plain)
+	}
+	if !strings.Contains(plain, "Select Models") {
+		t.Fatalf("expected model header, got:\n%s", plain)
+	}
+	if !strings.Contains(plain, "Select Providers ←") {
+		t.Fatalf("expected model switch hint in header, got:\n%s", plain)
+	}
+	if !strings.Contains(plain, "OpenRouter") {
+		t.Fatalf("expected selectable provider row in model card, got:\n%s", plain)
+	}
+	if !strings.Contains(plain, "double-press d to delete") {
+		t.Fatalf("expected provider delete hint, got:\n%s", plain)
+	}
+	if !strings.Contains(plain, "↑/↓ select") {
+		t.Fatalf("expected navigation hint in footer, got:\n%s", plain)
+	}
+	if strings.Contains(result, "╭───") || strings.Contains(result, "╰───") {
+		t.Fatalf("expected model focus to hide rear card edge fragments, got:\n%s", result)
+	}
+	lines := strings.Split(plain, "\n")
+	if got := strings.TrimSpace(lines[len(lines)-1]); !strings.Contains(got, "↑/↓ select · enter choose · esc") {
+		t.Fatalf("expected footer on final line, got last line %q in:\n%s", got, plain)
+	}
+}
+
+func TestRenderModelBrowserPopupProviderInputKeepsCardChromeAndHidesSearch(t *testing.T) {
+	result := RenderModelBrowserPopup(&model.ModelBrowserPopup{
+		Providers: model.SelectionPopup{
+			Title: "Providers",
+			Options: []model.SelectionOption{
+				{ID: "openrouter", Label: "OpenRouter", RequiresInput: true},
+			},
+			Selected: 0,
+		},
+		Models: model.SelectionPopup{
+			Title: "Models",
+			Options: []model.SelectionOption{
+				{ID: "openrouter:openai/gpt-4o-mini", Label: "GPT-4o mini"},
+			},
+			Selected: 0,
+		},
+		Focus:            model.ModelBrowserFocusProvider,
+		ProvidersVisible: true,
+		ProviderInput: &model.ModelBrowserProviderInput{
+			Option: model.SelectionOption{ID: "openrouter", Label: "OpenRouter", RequiresInput: true},
+			Label:  "API key",
+			Value:  "sk-demo",
+		},
+	})
+
+	plain := selectionPopupANSIPattern.ReplaceAllString(result, "")
+	if !strings.Contains(plain, "Select Providers") {
+		t.Fatalf("expected provider header, got:\n%s", plain)
+	}
+	if !strings.Contains(plain, "Select Models") {
+		t.Fatalf("expected unified header to include models label, got:\n%s", plain)
+	}
+	if !strings.Contains(plain, "API key") {
+		t.Fatalf("expected input label, got:\n%s", plain)
+	}
+	if !strings.Contains(plain, "→ Select Models") {
+		t.Fatalf("expected switch hint retained in input mode, got:\n%s", plain)
+	}
+	if !strings.Contains(plain, "↑/↓ select") {
+		t.Fatalf("expected navigation hint retained in input mode, got:\n%s", plain)
+	}
+	if strings.Contains(plain, "Search") {
+		t.Fatalf("expected search hidden in input mode, got:\n%s", plain)
+	}
+	lines := strings.Split(plain, "\n")
+	if got := strings.TrimSpace(lines[len(lines)-1]); !strings.Contains(got, "↑/↓ select · enter choose · esc") {
+		t.Fatalf("expected footer on final line, got last line %q in:\n%s", got, plain)
+	}
+}

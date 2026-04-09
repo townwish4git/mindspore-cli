@@ -9,10 +9,12 @@ import (
 )
 
 type providerWorkflowState struct {
-	catalog    *providerCatalog
-	authState  *providerAuthState
-	modelState *modelSelectionState
-	loggedIn   bool
+	catalog            *providerCatalog
+	authState          *providerAuthState
+	effectiveAuthState *providerAuthState
+	importSuggestions  []providerImportSuggestion
+	modelState         *modelSelectionState
+	loggedIn           bool
 }
 
 type logicalModelSelectionResult struct {
@@ -49,12 +51,29 @@ func (a *Application) loadProviderWorkflowState(mode providerCatalogLoadMode) (*
 	if err != nil {
 		return nil, err
 	}
-	return &providerWorkflowState{
+	state := &providerWorkflowState{
 		catalog:    catalog,
 		authState:  authState,
 		modelState: modelState,
 		loggedIn:   isLoggedIn(),
-	}, nil
+	}
+	state.refreshDerivedProviderState()
+	if mode == providerCatalogLoadCacheFirst && len(state.importSuggestions) == 0 && hasProviderEnvCandidates() {
+		blockingCatalog, blockingErr := loadProviderCatalogBlocking(appCfg.ExtraProviders)
+		if blockingErr == nil {
+			state.catalog = blockingCatalog
+			state.refreshDerivedProviderState()
+		}
+	}
+	return state, nil
+}
+
+func (s *providerWorkflowState) refreshDerivedProviderState() {
+	if s == nil {
+		return
+	}
+	s.importSuggestions = detectProviderImportSuggestions(s.catalog, s.authState)
+	s.effectiveAuthState = mergeProviderAuthStateWithImports(s.authState, s.importSuggestions)
 }
 
 func (a *Application) emitConnectPopup(canEscape bool) {
@@ -82,6 +101,27 @@ func (a *Application) emitConnectPopup(canEscape bool) {
 	}
 }
 
+func (a *Application) emitModelBrowser() {
+	state, err := a.loadProviderWorkflowState(providerCatalogLoadCacheFirst)
+	if err != nil {
+		a.emitToolError("model", "Failed to load models: %v", err)
+		return
+	}
+	a.emitModelBrowserWithState(state, "")
+}
+
+func (a *Application) emitModelBrowserWithState(state *providerWorkflowState, preferredProviderID string) {
+	if state == nil {
+		a.emitToolError("model", "Failed to load model browser state")
+		return
+	}
+
+	a.EventCh <- model.Event{
+		Type:         model.ModelBrowserOpen,
+		ModelBrowser: buildModelBrowserPopup(state, preferredProviderID),
+	}
+}
+
 func (a *Application) emitModelPicker() {
 	state, err := a.loadProviderWorkflowState(providerCatalogLoadCacheFirst)
 	if err != nil {
@@ -95,16 +135,16 @@ func (a *Application) emitModelPickerWithState(state *providerWorkflowState) {
 	if state == nil {
 		a.EventCh <- model.Event{
 			Type:    model.AgentReply,
-			Message: "No models available. Run /connect to configure a provider.",
+			Message: "No models available. Run /model to configure a provider.",
 		}
 		return
 	}
 
-	options := buildModelPickerOptions(state.catalog, state.authState, state.modelState, state.loggedIn)
+	options := buildModelPickerOptions(state.catalog, state.effectiveAuthState, state.modelState, state.loggedIn, state.importSuggestions)
 	if len(options) == 0 {
 		a.EventCh <- model.Event{
 			Type:    model.AgentReply,
-			Message: "No models available. Run /connect to configure a provider.",
+			Message: "No models available. Run /model to configure a provider.",
 		}
 		return
 	}
@@ -132,6 +172,59 @@ func (a *Application) emitModelPickerWithState(state *providerWorkflowState) {
 			SearchQuery: "",
 		},
 	}
+}
+
+func buildModelBrowserPopup(state *providerWorkflowState, preferredProviderID string) *model.ModelBrowserPopup {
+	providerOptions := buildConnectProviderOptions(state.catalog, state.loggedIn)
+	modelOptions := buildModelPickerOptions(state.catalog, state.effectiveAuthState, state.modelState, state.loggedIn, state.importSuggestions)
+
+	providerSelected := firstSelectableOptionIndex(providerOptions)
+	if activeProviderID := activeModelProviderID(state.modelState); activeProviderID != "" {
+		if idx := optionIndexByID(providerOptions, activeProviderID); idx >= 0 {
+			providerSelected = idx
+		}
+	}
+	if preferredProviderID = normalizedProviderID(preferredProviderID); preferredProviderID != "" {
+		if idx := optionIndexByID(providerOptions, preferredProviderID); idx >= 0 {
+			providerSelected = idx
+		}
+	}
+
+	modelSelected := firstSelectableModelIndex(modelOptions)
+	if state.modelState != nil && state.modelState.Active != nil {
+		if idx := optionIndexByID(modelOptions, state.modelState.Active.key()); idx >= 0 {
+			modelSelected = idx
+		}
+	}
+	if preferredProviderID != "" {
+		for i, opt := range modelOptions {
+			if strings.HasPrefix(opt.ID, preferredProviderID+":") && opt.Selectable() {
+				modelSelected = i
+				break
+			}
+		}
+	}
+
+	popup := &model.ModelBrowserPopup{
+		Providers: model.SelectionPopup{
+			Title:    "Providers",
+			Options:  providerOptions,
+			Selected: providerSelected,
+		},
+		Models: model.SelectionPopup{
+			Title:    "Models",
+			Options:  modelOptions,
+			Selected: modelSelected,
+		},
+		Focus:             model.ModelBrowserFocusModel,
+		ProvidersVisible:  false,
+		ImportSuggestions: toModelProviderImportSuggestions(state.importSuggestions),
+	}
+	if len(modelOptions) == 0 {
+		popup.Focus = model.ModelBrowserFocusProvider
+		popup.ProvidersVisible = true
+	}
+	return popup
 }
 
 func buildConnectProviderOptions(catalog *providerCatalog, loggedIn bool) []model.SelectionOption {
@@ -165,14 +258,8 @@ func connectProviderOption(provider providerCatalogEntry, loggedIn bool) model.S
 		RequiresInput: provider.Protocol != "mindspore-cli-free",
 	}
 	if provider.Protocol == "mindspore-cli-free" {
-		if loggedIn {
-			opt.Desc = "(Recommended)"
-			opt.RequiresInput = false
-		} else {
-			opt.Desc = "(require login)"
-			opt.Disabled = true
-			opt.RequiresInput = false
-		}
+		opt.Desc = "(Recommended)"
+		opt.RequiresInput = false
 		return opt
 	}
 	return opt
@@ -204,11 +291,38 @@ func firstSelectableOptionIndex(options []model.SelectionOption) int {
 	return 0
 }
 
-func buildModelPickerOptions(catalog *providerCatalog, authState *providerAuthState, modelState *modelSelectionState, loggedIn bool) []model.SelectionOption {
+func optionIndexByID(options []model.SelectionOption, id string) int {
+	needle := strings.TrimSpace(id)
+	for i, opt := range options {
+		if opt.ID == needle {
+			return i
+		}
+	}
+	return -1
+}
+
+func firstSelectableModelIndex(options []model.SelectionOption) int {
+	for i, opt := range options {
+		if opt.Selectable() && !opt.ProviderRow {
+			return i
+		}
+	}
+	return firstSelectableOptionIndex(options)
+}
+
+func activeModelProviderID(state *modelSelectionState) string {
+	if state == nil || state.Active == nil {
+		return ""
+	}
+	return normalizedProviderID(state.Active.ProviderID)
+}
+
+func buildModelPickerOptions(catalog *providerCatalog, authState *providerAuthState, modelState *modelSelectionState, loggedIn bool, importSuggestions []providerImportSuggestion) []model.SelectionOption {
 	if catalog == nil {
 		return nil
 	}
 	usable := usableProviders(catalog, authState, loggedIn)
+	importSuggestionsByID := providerImportSuggestionByID(importSuggestions)
 	options := make([]model.SelectionOption, 0)
 	const recentDisplayLimit = 5
 
@@ -258,7 +372,20 @@ func buildModelPickerOptions(catalog *providerCatalog, authState *providerAuthSt
 		if len(options) > 0 {
 			options = append(options, model.SelectionOption{ID: "__separator__provider:" + provider.ID, Separator: true, Disabled: true})
 		}
-		options = append(options, model.SelectionOption{ID: "__header__provider:" + provider.ID, Label: provider.Label, Header: true, Disabled: true})
+		providerRow := model.SelectionOption{
+			ID:          "__provider__" + provider.ID,
+			Label:       provider.Label,
+			ProviderRow: true,
+		}
+		if suggestion, ok := importSuggestionsByID[provider.ID]; ok {
+			providerRow.Desc = suggestion.SourceLabel
+		}
+		if provider.Protocol == "mindspore-cli-free" {
+			providerRow.Disabled = true
+		} else if importSuggestionsByID[provider.ID].ProviderID == "" {
+			providerRow.DeleteProviderID = provider.ID
+		}
+		options = append(options, providerRow)
 		for _, m := range provider.Models {
 			options = append(options, model.SelectionOption{
 				ID:    modelRef{ProviderID: provider.ID, ModelID: m.ID}.key(),
@@ -267,6 +394,125 @@ func buildModelPickerOptions(catalog *providerCatalog, authState *providerAuthSt
 		}
 	}
 	return options
+}
+
+type deleteProviderResult struct {
+	Fallback *modelRef
+	Cleared  bool
+	State    *providerWorkflowState
+}
+
+func (a *Application) deleteConnectedProvider(providerID string) (deleteProviderResult, error) {
+	state, err := a.loadProviderWorkflowState(providerCatalogLoadCacheFirst)
+	if err != nil {
+		return deleteProviderResult{}, err
+	}
+	providerID = normalizedProviderID(providerID)
+	if providerID == "" {
+		return deleteProviderResult{}, fmt.Errorf("provider id is empty")
+	}
+	if state.authState == nil {
+		state.authState = emptyProviderAuthState()
+	}
+	delete(state.authState.Providers, providerID)
+	if err := saveProviderAuthState(state.authState); err != nil {
+		return deleteProviderResult{}, err
+	}
+	state.refreshDerivedProviderState()
+
+	if state.modelState == nil {
+		state.modelState = emptyModelSelectionState()
+	}
+	wasActive := state.modelState.Active != nil && normalizedProviderID(state.modelState.Active.ProviderID) == providerID
+	state.modelState.Active = removeActiveProviderRef(state.modelState.Active, providerID)
+	state.modelState.Recents = removeProviderRefs(state.modelState.Recents, providerID)
+	state.modelState.Favorites = removeProviderRefs(state.modelState.Favorites, providerID)
+	if err := saveModelSelectionState(state.modelState); err != nil {
+		return deleteProviderResult{}, err
+	}
+
+	result := deleteProviderResult{State: state}
+	if !wasActive {
+		return result, nil
+	}
+
+	fallback := firstAvailableModelRef(state.catalog, state.effectiveAuthState, state.modelState, state.loggedIn)
+	if fallback == nil {
+		if blockingState, blockingErr := a.loadProviderWorkflowState(providerCatalogLoadBlocking); blockingErr == nil {
+			state = blockingState
+			result.State = blockingState
+			fallback = firstAvailableModelRef(state.catalog, state.effectiveAuthState, state.modelState, state.loggedIn)
+		}
+	}
+	if fallback == nil {
+		if err := a.clearActiveLogicalModel(); err != nil {
+			return deleteProviderResult{}, err
+		}
+		result.Cleared = true
+		return result, nil
+	}
+	if _, err := a.activateLogicalModelSelection(fallback.ProviderID, fallback.ModelID); err != nil {
+		return deleteProviderResult{}, err
+	}
+	result.Fallback = fallback
+	return result, nil
+}
+
+func removeActiveProviderRef(ref *modelRef, providerID string) *modelRef {
+	if ref == nil {
+		return nil
+	}
+	if normalizedProviderID(ref.ProviderID) == normalizedProviderID(providerID) {
+		return nil
+	}
+	normalized := ref.normalized()
+	return &normalized
+}
+
+func removeProviderRefs(refs []modelRef, providerID string) []modelRef {
+	out := make([]modelRef, 0, len(refs))
+	for _, ref := range refs {
+		if normalizedProviderID(ref.ProviderID) == normalizedProviderID(providerID) {
+			continue
+		}
+		out = append(out, ref)
+	}
+	return out
+}
+
+func firstAvailableModelRef(catalog *providerCatalog, authState *providerAuthState, modelState *modelSelectionState, loggedIn bool) *modelRef {
+	usable := usableProviders(catalog, authState, loggedIn)
+	tryRefs := func(refs []modelRef) *modelRef {
+		for _, ref := range refs {
+			provider, ok := findProviderInList(usable, ref.ProviderID)
+			if !ok {
+				continue
+			}
+			for _, m := range provider.Models {
+				if m.ID == strings.TrimSpace(ref.ModelID) {
+					normalized := ref.normalized()
+					return &normalized
+				}
+			}
+		}
+		return nil
+	}
+	if modelState != nil {
+		if ref := tryRefs(modelState.Recents); ref != nil {
+			return ref
+		}
+		if ref := tryRefs(modelState.Favorites); ref != nil {
+			return ref
+		}
+	}
+	for _, provider := range usable {
+		if len(provider.Models) == 0 {
+			continue
+		}
+		ref := modelRef{ProviderID: provider.ID, ModelID: provider.Models[0].ID}.normalized()
+		return &ref
+	}
+	return nil
 }
 
 func partitionConnectProviders(providers []providerCatalogEntry, loggedIn bool) ([]providerCatalogEntry, []providerCatalogEntry) {
@@ -293,10 +539,7 @@ func partitionConnectProviders(providers []providerCatalogEntry, loggedIn bool) 
 	}
 
 	if !loggedIn {
-		if provider, ok := providerByID[mindsporeCLIFreeProviderID]; ok {
-			other = append(other, provider)
-			delete(providerByID, mindsporeCLIFreeProviderID)
-		}
+		delete(providerByID, mindsporeCLIFreeProviderID)
 	}
 
 	rest := make([]providerCatalogEntry, 0, len(providerByID))
@@ -376,50 +619,43 @@ func runtimeProviderDisplayLabel(providerID string) string {
 	}
 }
 
-func (a *Application) connectProvider(providerID, apiKey string) error {
+func (a *Application) connectProvider(providerID, apiKey string) (*providerWorkflowState, error) {
 	state, err := a.loadProviderWorkflowState(providerCatalogLoadCacheFirst)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	provider, ok := state.catalog.Provider(providerID)
 	if !ok {
 		state, err = a.loadProviderWorkflowState(providerCatalogLoadBlocking)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		provider, ok = state.catalog.Provider(providerID)
 	}
 	if !ok {
-		return fmt.Errorf("unknown provider %q", providerID)
+		return nil, fmt.Errorf("unknown provider %q", providerID)
 	}
 
 	if provider.Protocol == "mindspore-cli-free" {
 		if !state.loggedIn {
-			return fmt.Errorf("MindSpore CLI Free requires /login first")
+			return nil, fmt.Errorf("MindSpore CLI Free requires /login first")
 		}
-		a.EventCh <- model.Event{Type: model.ModelSetupClose}
-		a.emitModelPickerWithState(state)
-		return nil
+		return state, nil
 	}
 
 	apiKey = strings.TrimSpace(apiKey)
 	if apiKey == "" {
-		return fmt.Errorf("provider %s requires api key", provider.Label)
+		return nil, fmt.Errorf("provider %s requires api key", provider.Label)
 	}
 	state.authState.Providers[provider.ID] = providerAuthEntry{
 		ProviderID: provider.ID,
 		APIKey:     apiKey,
 	}
 	if err := saveProviderAuthState(state.authState); err != nil {
-		return err
+		return nil, err
 	}
-
-	a.EventCh <- model.Event{Type: model.ModelSetupClose}
-	a.EventCh <- model.Event{
-		Type:  model.ModelPickerOpen,
-		Popup: buildProviderScopedModelPicker(provider),
-	}
-	return nil
+	state.refreshDerivedProviderState()
+	return state, nil
 }
 
 func (a *Application) activateLogicalModelSelection(providerID, modelID string) (logicalModelSelectionResult, error) {
@@ -434,7 +670,7 @@ func (a *Application) activateLogicalModelSelection(providerID, modelID string) 
 		}
 	}
 
-	resolved, presetID, err := resolveRuntimeSelection(state.catalog, state.authState, modelRef{
+	resolved, presetID, err := resolveRuntimeSelection(state.catalog, state.effectiveAuthState, modelRef{
 		ProviderID: providerID,
 		ModelID:    modelID,
 	})

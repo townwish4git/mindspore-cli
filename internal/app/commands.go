@@ -10,6 +10,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/mindspore-lab/mindspore-cli/agent/loop"
+	"github.com/mindspore-lab/mindspore-cli/configs"
 	"github.com/mindspore-lab/mindspore-cli/integrations/llm"
 	"github.com/mindspore-lab/mindspore-cli/internal/bugs"
 	issuepkg "github.com/mindspore-lab/mindspore-cli/internal/issues"
@@ -26,8 +28,6 @@ func (a *Application) handleCommand(input string) {
 	args := strings.Fields(cmd.Remainder)
 
 	switch cmd.Name {
-	case "/connect":
-		a.cmdConnect(args)
 	case "/model":
 		a.cmdModel(args)
 	case "/exit":
@@ -172,60 +172,18 @@ func (a *Application) handleSkillAliasCommand(commandName, rawRemainder string) 
 
 func (a *Application) cmdModel(args []string) {
 	if len(args) == 0 {
-		a.emitModelPicker()
+		a.emitModelBrowser()
 		return
 	}
-
-	modelArg := strings.TrimSpace(strings.Join(args, " "))
-	if strings.Contains(modelArg, ":") {
-		parts := strings.SplitN(modelArg, ":", 2)
-		providerName := llm.NormalizeProvider(parts[0])
-		modelName := strings.TrimSpace(parts[1])
-		if llm.IsSupportedProvider(providerName) {
-			a.restoreModelConfigFromPreset()
-			a.switchModel(providerName, modelName)
-			return
-		}
-		if result, err := a.activateLogicalModelSelection(parts[0], parts[1]); err == nil {
-			a.EventCh <- model.Event{
-				Type:     model.ModelUpdate,
-				Message:  a.Config.Model.Model,
-				Provider: result.ProviderLabel,
-				CtxMax:   a.Config.Context.Window,
-			}
-			a.EventCh <- model.Event{
-				Type:    model.AgentReply,
-				Message: fmt.Sprintf("Model switched to: %s", a.Config.Model.Model),
-			}
-			return
-		} else {
-			if strings.Contains(err.Error(), fmt.Sprintf("unknown provider %q", strings.TrimSpace(parts[0]))) {
-				a.EventCh <- model.Event{
-					Type:    model.AgentReply,
-					Message: fmt.Sprintf("Unsupported provider prefix: %s (supported: openai-completion, openai-responses, anthropic)", providerName),
-				}
-				return
-			}
-			a.EventCh <- model.Event{
-				Type:    model.AgentReply,
-				Message: fmt.Sprintf("Failed to switch model: %v", err),
-			}
-			return
-		}
+	a.EventCh <- model.Event{
+		Type:    model.AgentReply,
+		Message: "/model no longer accepts arguments. Use /model and choose from the UI.",
 	}
-
-	if preset, ok := resolveBuiltinModelPreset(modelArg); ok {
-		a.switchToBuiltinModelPreset(preset)
-		return
-	}
-
-	a.restoreModelConfigFromPreset()
-	a.switchModel("", modelArg)
 }
 
 func (a *Application) cmdConnect(args []string) {
 	if len(args) == 0 {
-		a.emitConnectPopup(true)
+		a.emitModelBrowser()
 		return
 	}
 
@@ -236,7 +194,8 @@ func (a *Application) cmdConnect(args []string) {
 	}
 
 	a.EventCh <- model.Event{Type: model.AgentThinking}
-	if err := a.connectProvider(providerID, apiKey); err != nil {
+	state, err := a.connectProvider(providerID, apiKey)
+	if err != nil {
 		a.EventCh <- model.Event{
 			Type:     model.ToolError,
 			ToolName: "connect",
@@ -244,10 +203,7 @@ func (a *Application) cmdConnect(args []string) {
 		}
 		return
 	}
-	a.EventCh <- model.Event{
-		Type:    model.AgentReply,
-		Message: fmt.Sprintf("Provider connected: %s", providerID),
-	}
+	a.emitModelBrowserWithState(state, providerID)
 }
 
 // applyPreset applies a preset with the given API key. It saves the current
@@ -338,6 +294,123 @@ func (a *Application) switchModel(providerName, modelName string) {
 		Type:    model.AgentReply,
 		Message: fmt.Sprintf("Model switched to: %s", a.Config.Model.Model),
 	}
+}
+
+func (a *Application) cmdSelectModel(args []string) {
+	if len(args) == 0 {
+		a.EventCh <- model.Event{
+			Type:     model.ToolError,
+			ToolName: "model",
+			Message:  "model selection requires provider:model",
+		}
+		return
+	}
+
+	parts := strings.SplitN(strings.TrimSpace(args[0]), ":", 2)
+	if len(parts) != 2 || strings.TrimSpace(parts[0]) == "" || strings.TrimSpace(parts[1]) == "" {
+		a.EventCh <- model.Event{
+			Type:     model.ToolError,
+			ToolName: "model",
+			Message:  "model selection requires provider:model",
+		}
+		return
+	}
+
+	a.EventCh <- model.Event{Type: model.AgentThinking}
+	result, err := a.activateLogicalModelSelection(parts[0], parts[1])
+	if err != nil {
+		a.EventCh <- model.Event{
+			Type:     model.ToolError,
+			ToolName: "model",
+			Message:  fmt.Sprintf("Failed to switch model: %v", err),
+		}
+		return
+	}
+
+	a.EventCh <- model.Event{Type: model.ModelBrowserClose}
+	a.EventCh <- model.Event{
+		Type:     model.ModelUpdate,
+		Message:  a.Config.Model.Model,
+		Provider: result.ProviderLabel,
+		CtxMax:   a.Config.Context.Window,
+	}
+	a.EventCh <- model.Event{
+		Type:    model.AgentReply,
+		Message: fmt.Sprintf("Model switched to: %s", a.Config.Model.Model),
+	}
+}
+
+func (a *Application) cmdDeleteProvider(args []string) {
+	if len(args) == 0 {
+		a.EventCh <- model.Event{
+			Type:     model.ToolError,
+			ToolName: "model",
+			Message:  "provider deletion requires provider id",
+		}
+		return
+	}
+
+	providerID := strings.TrimSpace(args[0])
+	a.EventCh <- model.Event{Type: model.AgentThinking}
+	result, err := a.deleteConnectedProvider(providerID)
+	if err != nil {
+		a.EventCh <- model.Event{
+			Type:     model.ToolError,
+			ToolName: "model",
+			Message:  fmt.Sprintf("Failed to delete provider: %v", err),
+		}
+		return
+	}
+
+	if result.Fallback != nil {
+		a.EventCh <- model.Event{
+			Type:     model.ModelUpdate,
+			Message:  a.Config.Model.Model,
+			Provider: runtimeProviderDisplayLabel(result.Fallback.ProviderID),
+			CtxMax:   a.Config.Context.Window,
+		}
+	} else if result.Cleared {
+		a.EventCh <- model.Event{
+			Type:     model.ModelUpdate,
+			Message:  "No model (/model to configure)",
+			Provider: "",
+			CtxMax:   a.Config.Context.Window,
+		}
+	}
+
+	if state, err := a.loadProviderWorkflowState(providerCatalogLoadCacheFirst); err == nil {
+		a.emitModelBrowserWithState(state, "")
+	}
+}
+
+func (a *Application) clearActiveLogicalModel() error {
+	previousModel := a.Config.Model.Model
+	a.restoreModelConfigFromPreset()
+	a.Config.Model.Provider = ""
+	a.Config.Model.Model = ""
+	a.Config.Model.Key = ""
+	a.Config.Model.URL = ""
+	configs.RefreshModelTokenDefaults(a.Config, previousModel)
+	a.provider = nil
+	a.llmReady = false
+
+	systemPrompt := ""
+	if a.ctxManager != nil {
+		if msg := a.ctxManager.GetSystemPrompt(); msg != nil {
+			systemPrompt = msg.Content
+		}
+	}
+
+	engineCfg := newEngineConfig(a.Config, systemPrompt)
+	newEngine := loop.NewEngine(engineCfg, nil, a.toolRegistry)
+	if a.ctxManager != nil {
+		newEngine.SetContextManager(a.ctxManager)
+	}
+	newEngine.SetLLMDebugDumper(a.llmDebugDumper)
+	newEngine.SetPermissionService(a.permService)
+	newEngine.SetTrajectoryRecorder(newTrajectoryRecorder(a.session, a.ctxManager, a.noteLiveLLMActivity))
+	a.Engine = newEngine
+	return nil
 }
 
 func (a *Application) cmdModelSetup(args []string) {

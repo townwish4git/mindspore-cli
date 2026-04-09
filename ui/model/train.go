@@ -234,14 +234,53 @@ type SelectionPopup struct {
 	ActionID    string // which action triggered the popup
 }
 
+type ModelBrowserFocus int
+
+const (
+	ModelBrowserFocusProvider ModelBrowserFocus = iota
+	ModelBrowserFocusModel
+)
+
+type ModelBrowserProviderInput struct {
+	Option SelectionOption
+	Label  string
+	Value  string
+	Error  string
+}
+
+type ProviderImportSuggestion struct {
+	ProviderID    string
+	ProviderLabel string
+	Source        string
+	SourceLabel   string
+	Protocol      string
+	BaseURL       string
+	APIKeyEnvVar  string
+	BaseURLEnvVar string
+}
+
+type ModelBrowserPopup struct {
+	Title                   string
+	Providers               SelectionPopup
+	Models                  SelectionPopup
+	Focus                   ModelBrowserFocus
+	ProvidersVisible        bool
+	ProviderInput           *ModelBrowserProviderInput
+	ImportSuggestions       []ProviderImportSuggestion
+	AnimationOffset         int
+	PendingDeleteProviderID string
+}
+
 type SelectionOption struct {
-	ID            string
-	Label         string
-	Desc          string
-	Header        bool
-	Separator     bool
-	Disabled      bool // grayed out, not selectable (e.g. coming soon)
-	RequiresInput bool
+	ID               string
+	Label            string
+	Desc             string
+	Header           bool
+	Separator        bool
+	Disabled         bool // grayed out, not selectable (e.g. coming soon)
+	RequiresInput    bool
+	ProviderRow      bool
+	DeleteProviderID string
 }
 
 // SetupScreen identifies which screen of the model setup popup is shown.
@@ -322,6 +361,18 @@ func (p *SelectionPopup) RestoreSearchBaseIfNeeded() {
 	if strings.TrimSpace(p.SearchQuery) == "" && p.SearchBase >= 0 && p.SearchBase < len(p.Options) {
 		p.Selected = p.SearchBase
 	}
+}
+
+func (p *ModelBrowserPopup) HasModels() bool {
+	if p == nil {
+		return false
+	}
+	for _, opt := range p.Models.Options {
+		if opt.Selectable() {
+			return true
+		}
+	}
+	return false
 }
 
 func (o SelectionOption) Selectable() bool {

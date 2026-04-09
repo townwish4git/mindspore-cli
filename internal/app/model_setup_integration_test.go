@@ -8,7 +8,7 @@ import (
 	"github.com/mindspore-lab/mindspore-cli/ui/model"
 )
 
-func TestModelCommand_OpensModelPickerWithState(t *testing.T) {
+func TestModelCommand_OpensModelBrowserWithState(t *testing.T) {
 	eventCh := make(chan model.Event, 64)
 	t.Setenv("HOME", t.TempDir())
 	if err := saveCredentials(&credentials{
@@ -36,30 +36,27 @@ func TestModelCommand_OpensModelPickerWithState(t *testing.T) {
 
 	app.cmdModel(nil)
 
-	var popup *model.SelectionPopup
+	var popup *model.ModelBrowserPopup
 	for len(eventCh) > 0 {
 		ev := <-eventCh
-		if ev.Type == model.ModelPickerOpen {
-			popup = ev.Popup
+		if ev.Type == model.ModelBrowserOpen {
+			popup = ev.ModelBrowser
 		}
 	}
 	if popup == nil {
-		t.Fatal("expected model picker to open")
+		t.Fatal("expected model browser to open")
 	}
-	if got, want := popup.ActionID, "model_picker"; got != want {
-		t.Errorf("popup.ActionID = %q, want %q", got, want)
-	}
-	if len(popup.Options) == 0 {
+	if len(popup.Models.Options) == 0 {
 		t.Fatal("expected model options")
 	}
 	foundFree := false
-	for _, opt := range popup.Options {
+	for _, opt := range popup.Models.Options {
 		if strings.Contains(opt.ID, "mindspore-cli-free:kimi-k2.5") {
 			foundFree = true
 			break
 		}
 	}
 	if !foundFree {
-		t.Errorf("expected free model option, got %#v", popup.Options)
+		t.Errorf("expected free model option, got %#v", popup.Models.Options)
 	}
 }

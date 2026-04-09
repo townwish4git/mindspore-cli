@@ -70,6 +70,67 @@ func TestRestoreProviderSelectionUsesPersistentState(t *testing.T) {
 	}
 }
 
+func TestRestoreProviderSelectionUsesClaudeCodeEnvImport(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("ANTHROPIC_BASE_URL", "https://api.kimi.com/coding/")
+	t.Setenv("ANTHROPIC_API_KEY", "sk-kimi-env")
+
+	origConfigPath := appConfigPathOverride
+	appConfigPathOverride = filepath.Join(home, ".mscli", "config.json")
+	t.Cleanup(func() { appConfigPathOverride = origConfigPath })
+	origAuthPath := authStatePathOverride
+	authStatePathOverride = filepath.Join(home, ".mscli", "auth.json")
+	t.Cleanup(func() { authStatePathOverride = origAuthPath })
+	origModelPath := modelStatePathOverride
+	modelStatePathOverride = filepath.Join(home, ".mscli", "model.json")
+	t.Cleanup(func() { modelStatePathOverride = origModelPath })
+	origCachePath := modelsDevCachePathOverride
+	modelsDevCachePathOverride = filepath.Join(home, ".mscli", "cached", "models-dev-api.json")
+	t.Cleanup(func() { modelsDevCachePathOverride = origCachePath })
+
+	server := newModelsDevTestServer(`{
+		"kimi-for-coding": {
+			"id": "kimi-for-coding",
+			"name": "Kimi For Coding",
+			"api": "https://api.kimi.com/coding/v1",
+			"npm": "@ai-sdk/anthropic",
+			"models": {"k2p5": {"id": "k2p5", "name": "Kimi K2.5"}}
+		}
+	}`)
+	defer server.Close()
+	origURL := modelsDevAPIURL
+	modelsDevAPIURL = server.URL
+	t.Cleanup(func() { modelsDevAPIURL = origURL })
+
+	if err := saveModelSelectionState(&modelSelectionState{
+		Active: &modelRef{ProviderID: "kimi-for-coding", ModelID: "k2p5"},
+	}); err != nil {
+		t.Fatalf("saveModelSelectionState() error = %v", err)
+	}
+
+	cfg := configs.DefaultConfig()
+	result, err := restoreProviderSelection(cfg)
+	if err != nil {
+		t.Fatalf("restoreProviderSelection() error = %v", err)
+	}
+	if !result.Restored {
+		t.Fatal("result.Restored = false, want true")
+	}
+	if got, want := cfg.Model.Provider, "anthropic"; got != want {
+		t.Fatalf("cfg.Model.Provider = %q, want %q", got, want)
+	}
+	if got, want := cfg.Model.URL, "https://api.kimi.com/coding/v1"; got != want {
+		t.Fatalf("cfg.Model.URL = %q, want %q", got, want)
+	}
+	if got, want := cfg.Model.Model, "k2p5"; got != want {
+		t.Fatalf("cfg.Model.Model = %q, want %q", got, want)
+	}
+	if got, want := cfg.Model.Key, "sk-kimi-env"; got != want {
+		t.Fatalf("cfg.Model.Key = %q, want %q", got, want)
+	}
+}
+
 func TestRestoreProviderSelectionDefaultsToFreeWhenLoggedIn(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)

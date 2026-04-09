@@ -24,7 +24,7 @@ import (
 	"github.com/mindspore-lab/mindspore-cli/ui/theme"
 )
 
-const provideAPIKeyFirstMsg = "LLM unavailable: run /connect to configure a provider."
+const provideAPIKeyFirstMsg = "LLM unavailable: run /model to configure a provider."
 const interruptActiveTaskToken = "__interrupt_active_task__"
 const internalPermissionsActionPrefix = "\x00permissions:"
 const historyReplayReadyToken = "__history_replay_ready__"
@@ -216,6 +216,16 @@ func (a *Application) processInput(input string) {
 	if strings.HasPrefix(trimmed, connectProviderToken+" ") {
 		parts := strings.Fields(trimmed)
 		a.cmdConnect(parts[1:])
+		return
+	}
+	if strings.HasPrefix(trimmed, selectModelToken+" ") {
+		parts := strings.Fields(trimmed)
+		a.cmdSelectModel(parts[1:])
+		return
+	}
+	if strings.HasPrefix(trimmed, deleteProviderToken+" ") {
+		parts := strings.Fields(trimmed)
+		a.cmdDeleteProvider(parts[1:])
 		return
 	}
 

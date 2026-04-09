@@ -30,13 +30,14 @@ func restoreProviderSelection(cfg *configs.Config) (providerRestoreResult, error
 	if err != nil {
 		return providerRestoreResult{}, err
 	}
+	effectiveAuthState := mergeProviderAuthStateWithImports(authState, detectProviderImportSuggestions(catalog, authState))
 	modelState, err := loadModelSelectionState()
 	if err != nil {
 		return providerRestoreResult{}, err
 	}
 
 	if modelState.Active != nil {
-		resolved, presetID, err := resolveRuntimeSelection(catalog, authState, *modelState.Active)
+		resolved, presetID, err := resolveRuntimeSelection(catalog, effectiveAuthState, *modelState.Active)
 		if err == nil {
 			applyResolvedModelConfig(cfg, resolved)
 			return providerRestoreResult{Restored: true, ActivePresetID: presetID}, nil
@@ -59,7 +60,7 @@ func restoreProviderSelection(cfg *configs.Config) (providerRestoreResult, error
 	}
 
 	if isLoggedIn() {
-		resolved, presetID, err := resolveRuntimeSelection(catalog, authState, modelRef{
+		resolved, presetID, err := resolveRuntimeSelection(catalog, effectiveAuthState, modelRef{
 			ProviderID: mindsporeCLIFreeProviderID,
 			ModelID:    "kimi-k2.5",
 		})
